@@ -2,17 +2,31 @@
 import json
 import datetime
 import streamlit as st
+from uuid import uuid4  # ← IDs uniques
 from models import Person, Depense
 
 st.set_page_config(page_title="Gestion personnes & dépenses", layout="wide")
 
+STORAGE_FILE = "storage.json"
+
+# --- Helpers ---
+def delete_by_id(items: list, item_id: str):
+    return [x for x in items if x.get("id") != item_id]
+
 # --- Stockage simple (JSON local) ---
 def load_state():
     try:
-        with open("storage.json", "r", encoding="utf-8") as f:
+        with open(STORAGE_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
-            people = data.get("people", [])
+            people_raw = data.get("people", [])
             depenses_raw = data.get("depenses", [])
+
+            # Ajoute un id si manquant (anciens enregistrements)
+            people = []
+            for p in people_raw:
+                if "id" not in p:
+                    p["id"] = str(uuid4())
+                people.append(p)
 
             # Migration douce : si anciens champs date_debut/date_fin, on fabrique date_depense
             depenses = []
@@ -24,9 +38,11 @@ def load_state():
                         d["date_depense"] = d["date_fin"]
                     else:
                         d["date_depense"] = str(datetime.date.today())
-                # Nettoyage éventuel des anciens champs (optionnel)
+                # Nettoyage éventuel des anciens champs
                 d.pop("date_debut", None)
                 d.pop("date_fin", None)
+                if "id" not in d:
+                    d["id"] = str(uuid4())
                 depenses.append(d)
 
             return people, depenses
@@ -34,7 +50,7 @@ def load_state():
         return [], []
 
 def save_state(people, depenses):
-    with open("storage.json", "w", encoding="utf-8") as f:
+    with open(STORAGE_FILE, "w", encoding="utf-8") as f:
         json.dump({"people": people, "depenses": depenses}, f, ensure_ascii=False, indent=2, default=str)
 
 people, depenses = load_state()
@@ -75,12 +91,45 @@ if page == "Personnes":
                 date_arrive,
                 date_depart
             )
-            people.append(p.__dict__)
+            person_dict = p.__dict__
+            person_dict["id"] = str(uuid4())  # ← ID unique
+            people.append(person_dict)
             save_state(people, depenses)
             st.success(f"Ajouté : {nom}")
+            st.rerun()
 
     st.subheader("Liste")
-    st.dataframe(people, use_container_width=True)
+    if not people:
+        st.info("Aucune personne enregistrée.")
+    else:
+        # Affichage en lignes avec bouton "Supprimer"
+        for p in people:
+            cols = st.columns([5, 3, 2, 2])
+            cols[0].markdown(f"**{p.get('nom','(sans nom)')}**")
+            cols[1].markdown(
+                f"Alcool: {'Oui' if p.get('alcool_boolean') else 'Non'} · "
+                f"Note: {p.get('alcool_classification')}"
+            )
+            cols[2].markdown(
+                f"Viande: {'Oui' if p.get('nourriture_boolean') else 'Non'} · "
+                f"Note: {p.get('nourriture_classification')}"
+            )
+            if cols[3].button("Supprimer", key=f"del_person_{p['id']}"):
+                people = delete_by_id(people, p["id"])
+                save_state(people, depenses)
+                st.success(f"Supprimé : {p.get('nom')}")
+                st.rerun()
+
+        # (Optionnel) Vue tabulaire rapide
+        with st.expander("Voir le tableau brut"):
+            st.dataframe(people, use_container_width=True)
+
+        # (Optionnel) Tout supprimer
+        if st.button("🗑️ Supprimer TOUTES les personnes"):
+            people = []
+            save_state(people, depenses)
+            st.warning("Toutes les personnes ont été supprimées.")
+            st.rerun()
 
 # --- Dépenses ---
 elif page == "Dépenses":
@@ -110,12 +159,41 @@ elif page == "Dépenses":
                 nourriture_prix=nourriture_prix,
                 date_depense=date_depense
             )
-            depenses.append(d.__dict__)
+            depense_dict = d.__dict__
+            depense_dict["id"] = str(uuid4())  # ← ID unique
+            depenses.append(depense_dict)
             save_state(people, depenses)
             st.success(f"Dépense ajoutée : {nom}")
+            st.rerun()
 
     st.subheader("Liste")
-    st.dataframe(depenses, use_container_width=True)
+    if not depenses:
+        st.info("Aucune dépense enregistrée.")
+    else:
+        for d in depenses:
+            cols = st.columns([5, 3, 3, 2, 2])
+            cols[0].markdown(f"**{d.get('nom','(sans nom)')}** — {d.get('date_depense')}")
+            cols[1].markdown(f"Total: {d.get('prix_depense',0.0):.2f} €")
+            cols[2].markdown(
+                f"Alcool: {'Oui' if d.get('alcool_boolean') else 'Non'} "
+                f"({d.get('alcool_prix',0.0):.2f} €) · "
+                f"Viande: {'Oui' if d.get('nourriture_boolean') else 'Non'} "
+                f"({d.get('nourriture_prix',0.0):.2f} €)"
+            )
+            if cols[4].button("Supprimer", key=f"del_depense_{d['id']}"):
+                depenses = delete_by_id(depenses, d["id"])
+                save_state(people, depenses)
+                st.success(f"Dépense supprimée : {d.get('nom')}")
+                st.rerun()
+
+        with st.expander("Voir le tableau brut"):
+            st.dataframe(depenses, use_container_width=True)
+
+        if st.button("🗑️ Supprimer TOUTES les dépenses"):
+            depenses = []
+            save_state(people, depenses)
+            st.warning("Toutes les dépenses ont été supprimées.")
+            st.rerun()
 
 # --- Synthèse ---
 else:
