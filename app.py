@@ -11,7 +11,25 @@ def load_state():
     try:
         with open("storage.json", "r", encoding="utf-8") as f:
             data = json.load(f)
-            return data.get("people", []), data.get("depenses", [])
+            people = data.get("people", [])
+            depenses_raw = data.get("depenses", [])
+
+            # Migration douce : si anciens champs date_debut/date_fin, on fabrique date_depense
+            depenses = []
+            for d in depenses_raw:
+                if "date_depense" not in d:
+                    if "date_debut" in d and d["date_debut"]:
+                        d["date_depense"] = d["date_debut"]
+                    elif "date_fin" in d and d["date_fin"]:
+                        d["date_depense"] = d["date_fin"]
+                    else:
+                        d["date_depense"] = str(datetime.date.today())
+                # Nettoyage éventuel des anciens champs (optionnel)
+                d.pop("date_debut", None)
+                d.pop("date_fin", None)
+                depenses.append(d)
+
+            return people, depenses
     except FileNotFoundError:
         return [], []
 
@@ -30,7 +48,7 @@ if page == "Personnes":
     with st.form("add_person"):
         nom = st.text_input("Nom")
 
-        # ⬇️ Libellés mis à jour
+        # Libellés mis à jour
         alcool_boolean = st.checkbox("Bois-tu de l'alcool ?")
         alcool_classification = st.number_input(
             "Par rapport aux autres personnes renseignées sur ce groupe, note sur une échelle de 1 à 10 ta consommation d'alcool",
@@ -70,17 +88,27 @@ elif page == "Dépenses":
     with st.form("add_depense"):
         nom = st.text_input("Nom de la dépense")
         prix_depense = st.number_input("Prix total", min_value=0.0, step=1.0)
-        alcool_boolean = st.checkbox("Contient de l'alcool ?")
-        alcool_prix = st.number_input("Prix alcool", min_value=0.0, step=1.0)
-        nourriture_boolean = st.checkbox("Contient de la nourriture ?")
-        nourriture_prix = st.number_input("Prix nourriture", min_value=0.0, step=1.0)
-        date_debut = st.date_input("Date début", datetime.date.today())
-        date_fin = st.date_input("Date fin", datetime.date.today())
+
+        # Libellés modifiés
+        alcool_boolean = st.checkbox("Est ce que cette dépense contient de l'alcool ?")
+        alcool_prix = st.number_input("Prix concernant l'achat d'alcool", min_value=0.0, step=1.0)
+
+        nourriture_boolean = st.checkbox("Est ce que cette dépense contient l'achat de viande ?")
+        nourriture_prix = st.number_input("Prix concernant l'achat de viande", min_value=0.0, step=1.0)
+
+        # Une seule date
+        date_depense = st.date_input("Date de la dépense", datetime.date.today())
+
         submitted = st.form_submit_button("Ajouter")
         if submitted:
             d = Depense(
-                nom, prix_depense, alcool_boolean, alcool_prix,
-                nourriture_boolean, nourriture_prix, date_debut, date_fin
+                nom=nom,
+                prix_depense=prix_depense,
+                alcool_boolean=alcool_boolean,
+                alcool_prix=alcool_prix,
+                nourriture_boolean=nourriture_boolean,
+                nourriture_prix=nourriture_prix,
+                date_depense=date_depense
             )
             depenses.append(d.__dict__)
             save_state(people, depenses)
@@ -97,7 +125,7 @@ else:
     total_nourriture = sum(x.get("nourriture_prix", 0.0) for x in depenses if x.get("nourriture_boolean"))
     st.metric("Total dépenses", f"{total:.2f} €")
     st.metric("Total alcool", f"{total_alcool:.2f} €")
-    st.metric("Total nourriture", f"{total_nourriture:.2f} €")
+    st.metric("Total viande", f"{total_nourriture:.2f} €")
     st.write("Filtre par période (optionnel) à ajouter si besoin.")
 
     st.download_button(

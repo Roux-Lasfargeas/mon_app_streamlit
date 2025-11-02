@@ -19,5 +19,4 @@ class Depense:
     alcool_prix: float
     nourriture_boolean: bool
     nourriture_prix: float
-    date_debut: datetime.date
-    date_fin: datetime.date
+    date_depense: datetime.date
