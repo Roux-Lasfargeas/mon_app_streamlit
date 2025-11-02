@@ -1,9 +1,14 @@
 # app.py
 import json
 import datetime
+from collections import defaultdict
+
 import streamlit as st
 from uuid import uuid4  # IDs uniques
 from models import Person, Depense
+
+# Charts
+import pandas as pd  # <- nécessite 'pandas' dans requirements.txt
 
 st.set_page_config(page_title="Gestion personnes & dépenses", layout="wide")
 
@@ -15,6 +20,17 @@ def delete_by_id(items: list, item_id: str):
 
 def safe_sum(values):
     return sum(v for v in values if isinstance(v, (int, float)))
+
+def to_date(obj):
+    """Accepte date ou str ISO ('YYYY-MM-DD') -> datetime.date"""
+    if isinstance(obj, datetime.date):
+        return obj
+    if isinstance(obj, str) and obj:
+        try:
+            return datetime.date.fromisoformat(obj)
+        except ValueError:
+            pass
+    return None
 
 def load_state():
     """Charge le storage.json, migre les anciens schémas (id manquant, dates anciennes)"""
@@ -74,7 +90,7 @@ def compute_weighted_shares(people, depenses):
         for name in dues:
             dues[name] += base_share
 
-        # Répartition alcool pondérée
+        # Répartition alcool pondérée (🍷)
         drinkers = [p for p in people if p.get("alcool_boolean")]
         w_sum_a = safe_sum([(p.get("alcool_classification") or 0) for p in drinkers])
         if alcool_part > 0:
@@ -86,7 +102,7 @@ def compute_weighted_shares(people, depenses):
                 for n in dues:
                     dues[n] += alcool_part / nb_all
 
-        # Répartition viande pondérée
+        # Répartition viande pondérée (🍖)
         eaters = [p for p in people if p.get("nourriture_boolean")]
         w_sum_f = safe_sum([(p.get("nourriture_classification") or 0) for p in eaters])
         if viande_part > 0:
@@ -100,10 +116,59 @@ def compute_weighted_shares(people, depenses):
 
     return {k: round(v, 2) for k, v in dues.items()}
 
+def filter_depenses_by_date(depenses, start_date, end_date):
+    """Filtre d par date_depense dans [start_date, end_date] (bornes incluses)"""
+    if not start_date and not end_date:
+        return depenses
+    out = []
+    for d in depenses:
+        dd = to_date(d.get("date_depense"))
+        if not dd:
+            continue
+        if start_date and dd < start_date:
+            continue
+        if end_date and dd > end_date:
+            continue
+        out.append(d)
+    return out
+
+def css_theme(dark: bool):
+    """Applique un thème clair/sombre simple via CSS."""
+    if dark:
+        bg = "#0E1117"
+        text = "#FAFAFA"
+        card = "#1E222A"
+    else:
+        bg = "#FFFFFF"
+        text = "#0E0E0E"
+        card = "#F6F6F6"
+    st.markdown(
+        f"""
+        <style>
+        .stApp {{
+            background-color: {bg};
+            color: {text};
+        }}
+        .stMarkdown, .stMetric, .css-1dp5vir, .css-10trblm {{
+            color: {text} !important;
+        }}
+        .stDataFrame, .stExpander, .stButton>button, .stSelectbox, .stTextInput, .stNumberInput, .stDateInput {{
+            background: {card} !important;
+            color: {text} !important;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
 # ------------------ Chargement ------------------
 people, depenses = load_state()
 
-# ------------------ Menu ------------------
+# ------------------ Menu + Thème ------------------
+with st.sidebar:
+    dark_mode = st.toggle("🌙 Thème sombre", value=False)
+css_theme(dark_mode)
+
 page = st.sidebar.radio(
     "Navigation",
     [
@@ -115,19 +180,19 @@ page = st.sidebar.radio(
 
 # ------------------ Participants ------------------
 if page == "Participant (ajouter/enlever des participants)":
-    st.header("Participants")
+    st.header("👥 Participants")
     with st.form("add_person"):
         nom = st.text_input("Nom")
         if not nom.strip():
             st.caption("⚠️ Le nom ne peut pas être vide.")
 
-        alcool_boolean = st.checkbox("Bois-tu de l'alcool ?")
+        alcool_boolean = st.checkbox("Bois-tu de l'alcool ? 🍷")
         alcool_classification = st.number_input(
             "Par rapport aux autres personnes renseignées sur ce groupe, note sur une échelle de 1 à 10 ta consommation d'alcool",
             min_value=1, max_value=10, step=1, value=5
         )
 
-        nourriture_boolean = st.checkbox("Manges-tu de la viande ?")
+        nourriture_boolean = st.checkbox("Manges-tu de la viande ? 🍖")
         nourriture_classification = st.number_input(
             "Par rapport aux autres personnes renseignées sur ce groupe, note sur une échelle de 1 à 10 ta consommation de nourriture espèce de gros mangeur",
             min_value=1, max_value=10, step=1, value=5
@@ -165,11 +230,11 @@ if page == "Participant (ajouter/enlever des participants)":
             cols = st.columns([5, 3, 2, 2])
             cols[0].markdown(f"**{p.get('nom','(sans nom)')}**")
             cols[1].markdown(
-                f"Alcool: {'Oui' if p.get('alcool_boolean') else 'Non'} · "
+                f"🍷 Alcool: {'Oui' if p.get('alcool_boolean') else 'Non'} · "
                 f"Note: {p.get('alcool_classification')}"
             )
             cols[2].markdown(
-                f"Viande: {'Oui' if p.get('nourriture_boolean') else 'Non'} · "
+                f"🍖 Viande: {'Oui' if p.get('nourriture_boolean') else 'Non'} · "
                 f"Note: {p.get('nourriture_classification')}"
             )
             if cols[3].button("Supprimer", key=f"del_person_{p['id']}"):
@@ -183,7 +248,7 @@ if page == "Participant (ajouter/enlever des participants)":
 
 # ------------------ Dépenses ------------------
 elif page == "Dépenses (ajouter/enlever des participants)":
-    st.header("Dépenses")
+    st.header("💰 Dépenses")
 
     if not people:
         st.warning("⚠️ Vous devez enregistrer au moins un participant avant d'ajouter une dépense.")
@@ -191,13 +256,13 @@ elif page == "Dépenses (ajouter/enlever des participants)":
 
     with st.form("add_depense"):
         nom = st.text_input("Nom de la dépense")
-        prix_depense = st.number_input("Prix total", min_value=0.0, step=1.0)
+        prix_depense = st.number_input("Prix total (€)", min_value=0.0, step=1.0)
 
-        alcool_boolean = st.checkbox("Est ce que cette dépense contient de l'alcool ?")
-        alcool_prix = st.number_input("Prix concernant l'achat d'alcool", min_value=0.0, step=1.0)
+        alcool_boolean = st.checkbox("Est ce que cette dépense contient de l'alcool ? 🍷")
+        alcool_prix = st.number_input("Prix concernant l'achat d'alcool (€)", min_value=0.0, step=1.0)
 
-        nourriture_boolean = st.checkbox("Est ce que cette dépense contient l'achat de viande ?")
-        nourriture_prix = st.number_input("Prix concernant l'achat de viande", min_value=0.0, step=1.0)
+        nourriture_boolean = st.checkbox("Est ce que cette dépense contient l'achat de viande ? 🍖")
+        nourriture_prix = st.number_input("Prix concernant l'achat de viande (€)", min_value=0.0, step=1.0)
 
         date_depense = st.date_input("Date de la dépense", datetime.date.today())
 
@@ -248,11 +313,11 @@ elif page == "Dépenses (ajouter/enlever des participants)":
                 f"**{d.get('nom','(sans nom)')}** — {d.get('date_depense')}  \n"
                 f"_Payée par_ **{d.get('payeur_nom','?')}**"
             )
-            cols[1].markdown(f"Total: {d.get('prix_depense',0.0):.2f} €")
+            cols[1].markdown(f"💰 Total: {d.get('prix_depense',0.0):.2f} €")
             cols[2].markdown(
-                f"Alcool: {'Oui' if d.get('alcool_boolean') else 'Non'} "
+                f"🍷 Alcool: {'Oui' if d.get('alcool_boolean') else 'Non'} "
                 f"({d.get('alcool_prix',0.0):.2f} €) · "
-                f"Viande: {'Oui' if d.get('nourriture_boolean') else 'Non'} "
+                f"🍖 Viande: {'Oui' if d.get('nourriture_boolean') else 'Non'} "
                 f"({d.get('nourriture_prix',0.0):.2f} €)"
             )
             if cols[4].button("Supprimer", key=f"del_depense_{d['id']}"):
@@ -266,30 +331,84 @@ elif page == "Dépenses (ajouter/enlever des participants)":
 
 # ------------------ Synthèse ------------------
 else:
-    st.header("Synthèse")
+    st.header("📊 Synthèse")
 
-    total = sum(x.get("prix_depense", 0.0) for x in depenses)
-    total_alcool = sum(x.get("alcool_prix", 0.0) for x in depenses if x.get("alcool_boolean"))
-    total_viande = sum(x.get("nourriture_prix", 0.0) for x in depenses if x.get("nourriture_boolean"))
+    # -------- Filtres par période --------
+    colf1, colf2 = st.columns(2)
+    with colf1:
+        start_date = st.date_input("📅 Date de début (filtre)", value=None)
+    with colf2:
+        end_date = st.date_input("📅 Date de fin (filtre)", value=None)
 
-    st.metric("Total dépenses", f"{total:.2f} €")
-    st.metric("Total alcool", f"{total_alcool:.2f} €")
-    st.metric("Total viande", f"{total_viande:.2f} €")
+    depenses_filtered = filter_depenses_by_date(depenses, start_date, end_date)
 
-    # Équilibre des dépenses pondéré
-    st.subheader("Équilibre des dépenses")
+    # -------- Totaux principaux --------
+    total = sum(x.get("prix_depense", 0.0) for x in depenses_filtered)
+    total_alcool = sum(x.get("alcool_prix", 0.0) for x in depenses_filtered if x.get("alcool_boolean"))
+    total_viande = sum(x.get("nourriture_prix", 0.0) for x in depenses_filtered if x.get("nourriture_boolean"))
+    total_autres = max(total - total_alcool - total_viande, 0.0)
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("💰 Total dépenses", f"{total:.2f} €")
+    c2.metric("🍷 Total alcool", f"{total_alcool:.2f} €")
+    c3.metric("🍖 Total viande", f"{total_viande:.2f} €")
+    c4.metric("🧾 Autres", f"{total_autres:.2f} €")
+
+    # -------- Équilibre des dépenses pondéré --------
+    st.subheader("⚖️ Équilibre des dépenses (pondéré)")
     if not people:
         st.info("Aucun participant pour calculer l'équilibre.")
     else:
-        dues = compute_weighted_shares(people, depenses)
+        dues = compute_weighted_shares(people, depenses_filtered)
         if not dues:
-            st.info("Aucune dépense enregistrée.")
+            st.info("Aucune dépense dans la période sélectionnée.")
         else:
-            for name, amount in dues.items():
-                st.write(f"• **{name}** devrait payer : **{amount:.2f} €**")
+            df_dues = pd.DataFrame({"Participant": list(dues.keys()), "Part due (€)": list(dues.values())})
+            st.dataframe(df_dues, use_container_width=True)
+            st.bar_chart(df_dues.set_index("Participant"))
 
+    # -------- Graphiques --------
+    st.subheader("📈 Graphiques")
+
+    # 1) Répartition par type
+    df_types = pd.DataFrame(
+        {"Montant (€)": [total_alcool, total_viande, total_autres]},
+        index=["🍷 Alcool", "🍖 Viande", "💰 Autres"]
+    )
+    st.write("**Répartition des dépenses par type**")
+    st.bar_chart(df_types)
+
+    # 2) Évolution dans le temps (somme par date)
+    series_by_date = defaultdict(float)
+    for d in depenses_filtered:
+        dd = to_date(d.get("date_depense"))
+        if dd:
+            series_by_date[dd] += float(d.get("prix_depense", 0.0) or 0.0)
+    if series_by_date:
+        df_time = pd.DataFrame(
+            {"Dépenses (€)": [series_by_date[k] for k in sorted(series_by_date.keys())]},
+            index=sorted(series_by_date.keys())
+        )
+        st.write("**Évolution des dépenses dans le temps**")
+        st.line_chart(df_time)
+    else:
+        st.info("Aucune dépense dans la période pour tracer l'évolution.")
+
+    # 3) Part de chaque payeur
+    paid_by = defaultdict(float)
+    for d in depenses_filtered:
+        payer = d.get("payeur_nom") or "Inconnu"
+        paid_by[payer] += float(d.get("prix_depense", 0.0) or 0.0)
+    if paid_by:
+        df_pay = pd.DataFrame({"Payé (€)": list(paid_by.values())}, index=list(paid_by.keys()))
+        st.write("**Part de chaque payeur**")
+        st.bar_chart(df_pay)
+    else:
+        st.info("Aucun paiement enregistré dans la période choisie.")
+
+    # Export JSON filtré
     st.download_button(
-        "Exporter JSON",
-        json.dumps({"people": people, "depenses": depenses}, ensure_ascii=False, indent=2),
-        file_name="export.json"
+        "📥 Exporter JSON (période filtrée)",
+        json.dumps({"people": people, "depenses": depenses_filtered}, ensure_ascii=False, indent=2),
+        file_name="export_filtre.json"
     )
