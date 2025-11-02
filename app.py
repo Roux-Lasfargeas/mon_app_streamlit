@@ -8,7 +8,8 @@ from uuid import uuid4  # IDs uniques
 from models import Person, Depense
 
 # Charts
-import pandas as pd  # <- nécessite 'pandas' dans requirements.txt
+import pandas as pd
+import plotly.express as px
 
 st.set_page_config(page_title="Gestion personnes & dépenses", layout="wide")
 
@@ -145,16 +146,10 @@ def css_theme(dark: bool):
     st.markdown(
         f"""
         <style>
-        .stApp {{
-            background-color: {bg};
-            color: {text};
-        }}
-        .stMarkdown, .stMetric, .css-1dp5vir, .css-10trblm {{
-            color: {text} !important;
-        }}
+        .stApp {{ background-color: {bg}; color: {text}; }}
+        .stMarkdown, .stMetric {{ color: {text} !important; }}
         .stDataFrame, .stExpander, .stButton>button, .stSelectbox, .stTextInput, .stNumberInput, .stDateInput {{
-            background: {card} !important;
-            color: {text} !important;
+            background: {card} !important; color: {text} !important;
         }}
         </style>
         """,
@@ -175,6 +170,8 @@ page = st.sidebar.radio(
         "Participant (ajouter/enlever des participants)",
         "Dépenses (ajouter/enlever des participants)",
         "Synthèse",
+        "📈 Résumé des dépenses",
+        "🧬 Résumé des profils du groupe",
     ],
 )
 
@@ -329,11 +326,44 @@ elif page == "Dépenses (ajouter/enlever des participants)":
         with st.expander("Voir le tableau brut"):
             st.dataframe(depenses, use_container_width=True)
 
-# ------------------ Synthèse ------------------
-else:
+# ------------------ Synthèse (totaux + équilibre SEULS) ------------------
+elif page == "Synthèse":
     st.header("📊 Synthèse")
 
-    # -------- Filtres par période --------
+    # Totaux globaux (pas de filtres ici)
+    total = sum(x.get("prix_depense", 0.0) for x in depenses)
+    total_alcool = sum(x.get("alcool_prix", 0.0) for x in depenses if x.get("alcool_boolean"))
+    total_viande = sum(x.get("nourriture_prix", 0.0) for x in depenses if x.get("nourriture_boolean"))
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("💰 Total dépenses", f"{total:.2f} €")
+    c2.metric("🍷 Total alcool", f"{total_alcool:.2f} €")
+    c3.metric("🍖 Total viande", f"{total_viande:.2f} €")
+
+    # Équilibre pondéré (sur toutes les dépenses)
+    st.subheader("⚖️ Équilibre des dépenses (pondéré)")
+    if not people:
+        st.info("Aucun participant pour calculer l'équilibre.")
+    else:
+        dues = compute_weighted_shares(people, depenses)
+        if not dues:
+            st.info("Aucune dépense enregistrée.")
+        else:
+            df_dues = pd.DataFrame({"Participant": list(dues.keys()), "Part due (€)": list(dues.values())})
+            st.dataframe(df_dues, use_container_width=True)
+
+    # Export global
+    st.download_button(
+        "📥 Exporter JSON (tout)",
+        json.dumps({"people": people, "depenses": depenses}, ensure_ascii=False, indent=2),
+        file_name="export_total.json"
+    )
+
+# ------------------ Résumé des dépenses (FILTRES + GRAPHIQUES) ------------------
+elif page == "📈 Résumé des dépenses":
+    st.header("📈 Résumé des dépenses")
+
+    # Filtres par période
     colf1, colf2 = st.columns(2)
     with colf1:
         start_date = st.date_input("📅 Date de début (filtre)", value=None)
@@ -342,7 +372,6 @@ else:
 
     depenses_filtered = filter_depenses_by_date(depenses, start_date, end_date)
 
-    # -------- Totaux principaux --------
     total = sum(x.get("prix_depense", 0.0) for x in depenses_filtered)
     total_alcool = sum(x.get("alcool_prix", 0.0) for x in depenses_filtered if x.get("alcool_boolean"))
     total_viande = sum(x.get("nourriture_prix", 0.0) for x in depenses_filtered if x.get("nourriture_boolean"))
@@ -354,61 +383,98 @@ else:
     c3.metric("🍖 Total viande", f"{total_viande:.2f} €")
     c4.metric("🧾 Autres", f"{total_autres:.2f} €")
 
-    # -------- Équilibre des dépenses pondéré --------
-    st.subheader("⚖️ Équilibre des dépenses (pondéré)")
-    if not people:
-        st.info("Aucun participant pour calculer l'équilibre.")
-    else:
-        dues = compute_weighted_shares(people, depenses_filtered)
-        if not dues:
-            st.info("Aucune dépense dans la période sélectionnée.")
-        else:
-            df_dues = pd.DataFrame({"Participant": list(dues.keys()), "Part due (€)": list(dues.values())})
-            st.dataframe(df_dues, use_container_width=True)
-            st.bar_chart(df_dues.set_index("Participant"))
+    st.subheader("📊 Graphiques")
 
-    # -------- Graphiques --------
-    st.subheader("📈 Graphiques")
-
-    # 1) Répartition par type
+    # 1) Répartition par type (camembert)
     df_types = pd.DataFrame(
-        {"Montant (€)": [total_alcool, total_viande, total_autres]},
-        index=["🍷 Alcool", "🍖 Viande", "💰 Autres"]
+        {"Type": ["🍷 Alcool", "🍖 Viande", "💰 Autres"], "Montant (€)": [total_alcool, total_viande, total_autres]}
     )
-    st.write("**Répartition des dépenses par type**")
-    st.bar_chart(df_types)
+    fig_types = px.pie(df_types, names="Type", values="Montant (€)", title="Répartition par type")
+    st.plotly_chart(fig_types, use_container_width=True)
 
-    # 2) Évolution dans le temps (somme par date)
+    # 2) Évolution des dépenses dans le temps (ligne)
     series_by_date = defaultdict(float)
     for d in depenses_filtered:
         dd = to_date(d.get("date_depense"))
         if dd:
             series_by_date[dd] += float(d.get("prix_depense", 0.0) or 0.0)
     if series_by_date:
-        df_time = pd.DataFrame(
-            {"Dépenses (€)": [series_by_date[k] for k in sorted(series_by_date.keys())]},
-            index=sorted(series_by_date.keys())
-        )
-        st.write("**Évolution des dépenses dans le temps**")
-        st.line_chart(df_time)
+        df_time = pd.DataFrame({"Date": sorted(series_by_date.keys())})
+        df_time["Dépenses (€)"] = df_time["Date"].map(series_by_date)
+        fig_line = px.line(df_time, x="Date", y="Dépenses (€)", markers=True, title="Évolution des dépenses")
+        st.plotly_chart(fig_line, use_container_width=True)
     else:
         st.info("Aucune dépense dans la période pour tracer l'évolution.")
 
-    # 3) Part de chaque payeur
+    # 3) Part de chaque payeur (barres)
     paid_by = defaultdict(float)
     for d in depenses_filtered:
         payer = d.get("payeur_nom") or "Inconnu"
         paid_by[payer] += float(d.get("prix_depense", 0.0) or 0.0)
     if paid_by:
-        df_pay = pd.DataFrame({"Payé (€)": list(paid_by.values())}, index=list(paid_by.keys()))
-        st.write("**Part de chaque payeur**")
-        st.bar_chart(df_pay)
+        df_pay = pd.DataFrame({"Payeur": list(paid_by.keys()), "Payé (€)": list(paid_by.values())})
+        fig_pay = px.bar(df_pay, x="Payeur", y="Payé (€)", title="Part de chaque payeur")
+        st.plotly_chart(fig_pay, use_container_width=True)
     else:
         st.info("Aucun paiement enregistré dans la période choisie.")
 
-    # Export JSON filtré
-    st.download_button(
-        "📥 Exporter JSON (période filtrée)",
-        json.dumps({"people": people, "depenses": depenses_filtered}, ensure_ascii=False, indent=2),
-        file_name="export_filtre.json"
-    )
+# ------------------ Résumé des profils du groupe ------------------
+else:  # "🧬 Résumé des profils du groupe"
+    st.header("🧬 Résumé des profils du groupe")
+
+    if not people:
+        st.info("Aucun participant enregistré.")
+    else:
+        # Listes
+        non_viande = [p["nom"] for p in people if p.get("nom") and not p.get("nourriture_boolean")]
+        boivent = [p["nom"] for p in people if p.get("nom") and p.get("alcool_boolean")]
+
+        col1, col2 = st.columns(2)
+        with col1:
+            st.subheader("🚫 Ne mangent pas de viande")
+            if non_viande:
+                for n in non_viande:
+                    st.write(f"• {n}")
+            else:
+                st.caption("Tout le monde mange de la viande.")
+
+        with col2:
+            st.subheader("🍷 Boivent de l'alcool")
+            if boivent:
+                for n in boivent:
+                    st.write(f"• {n}")
+            else:
+                st.caption("Personne ne boit d'alcool.")
+
+        # Camemberts d'intensité par personne
+        st.subheader("🥧 Répartition des intensités de consommation")
+
+        # Nourriture (pondéré par note, 0 si ne mange pas de viande)
+        data_food = []
+        for p in people:
+            name = p.get("nom")
+            if not name:
+                continue
+            w = p.get("nourriture_classification") if p.get("nourriture_boolean") else 0
+            data_food.append({"Personne": name, "Score": int(w or 0)})
+        df_food = pd.DataFrame(data_food)
+        if df_food["Score"].sum() > 0:
+            fig_food = px.pie(df_food, names="Personne", values="Score", title="Consommation de nourriture (scores 1–10)")
+            st.plotly_chart(fig_food, use_container_width=True)
+        else:
+            st.caption("Pas de répartition nourriture (scores nuls ou personne ne mange de viande).")
+
+        # Alcool (pondéré par note, 0 si ne boit pas)
+        data_alc = []
+        for p in people:
+            name = p.get("nom")
+            if not name:
+                continue
+            w = p.get("alcool_classification") if p.get("alcool_boolean") else 0
+            data_alc.append({"Personne": name, "Score": int(w or 0)})
+        df_alc = pd.DataFrame(data_alc)
+        if df_alc["Score"].sum() > 0:
+            fig_alc = px.pie(df_alc, names="Personne", values="Score", title="Consommation d'alcool (scores 1–10)")
+            st.plotly_chart(fig_alc, use_container_width=True)
+        else:
+            st.caption("Pas de répartition alcool (scores nuls ou personne ne boit).")
