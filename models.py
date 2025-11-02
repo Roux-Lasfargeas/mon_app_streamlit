@@ -1,4 +1,5 @@
-from dataclasses import dataclass, asdict
+# models.py
+from dataclasses import dataclass
 import datetime
 
 @dataclass
@@ -20,3 +21,4 @@ class Depense:
     nourriture_boolean: bool
     nourriture_prix: float
     date_depense: datetime.date
+    payeur_nom: str = ""   # 👈 nouveau champ optionnel
